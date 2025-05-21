@@ -24,7 +24,27 @@ const int servoPin = 23;
 // state
 String boxState = "CLOSED";
 
+// servo
 Servo servo;
+
+// timer + ISR and flag
+hw_timer_t* timer = NULL;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool timeoutFlag = false;
+
+void IRAM_ATTR onTimeout() {
+  portENTER_CRITICAL_ISR(&timerMux);
+  timeoutFlag = true;
+  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+void startClientTimer() {
+  portENTER_CRITICAL(&timerMux);
+  timeoutFlag = false;
+  timerWrite(timer, 0);
+  timerAlarmEnable(timer);
+  portEXIT_CRITICAL(&timerMux);
+}
 
 // function to make sounds
 void buzz(int duration) {
@@ -71,14 +91,14 @@ void toggleLock() {
 }
 
 void setup() {
-  Serial.begin(115200);
+  // Serial.begin(115200);
 
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, LOW);
 
   // init display with default vcs (using a 3.7V) and addr
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("Display failed"));
+    // Serial.println(F("Display failed"));
     while (true);
   }
 
@@ -97,28 +117,36 @@ void setup() {
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+    // delay(500);
+    // Serial.print(".");
   }
 
-  Serial.println("\nWiFi connected");
-  Serial.println("IP: ");
-  Serial.println(WiFi.localIP());
+  // Serial.println("\nWIFI connected");
+  // Serial.println("IP: ");
+  // Serial.println(WiFi.localIP());
 
   server.begin();
   updateDisplay();
+
+  // timer setup
+  timer = timerBegin(0, 80, true);
+  timerAttachInterrupt(timer, &onTimeout, true);
+  // timeout after 10s
+  timerAlarmWrite(timer, 10000000, false);
+  timerAlarmDisable(timer);
 }
 
 void loop() {
   WiFiClient client = server.available();
   if (client) {
     String request = "";
-    while (client.connected()) {
+    startClientTimer();
+    while (client.connected() && !timeoutFlag) {
       if (client.available()) {
         char c = client.read();
         request += c;
         if (c == '\n') {
-          // trigge toggle function
+          // trigger toggle function
           if (request.indexOf("GET /toggle") >= 0) {
             toggleLock();
           }
@@ -180,7 +208,14 @@ void loop() {
         }
       }
     }
-    delay(500);
+    // end message
     client.stop();
+    
+    // reset timeout timer and flag
+    timerAlarmDisable(timer);
+    timeoutFlag = false;
+
+    // Serial.println("HTTP end");
+    // Serial.println("");
   }
 }
